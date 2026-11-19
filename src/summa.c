@@ -1,0 +1,263 @@
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <mpi.h>
+
+int main(int argc, char *argv[]) {
+
+    int rank, size;
+    int n = 512;
+
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    if (argc > 1)
+        n = atoi(argv[1]);
+
+    int q = (int)sqrt((double)size);
+
+    if (n <= 0 || q * q != size) {
+        if (rank == 0)
+            printf("Invalid size or process count. Use 1, 4, 9 or 16 processes.\n");
+        MPI_Finalize();
+        return 1;
+    }
+
+    // Pad matrix dimension for equal-sized blocks
+    int b = (n + q - 1) / q;
+    int N = b * q;
+
+    size_t block_size = (size_t)b * b;
+    size_t matrix_size = (size_t)N * N;
+
+    // Create 2D Cartesian grid
+    int dims[2] = {q, q};
+    int periods[2] = {0, 0};
+
+    MPI_Comm grid, row_comm, col_comm;
+
+    MPI_Cart_create(MPI_COMM_WORLD, 2, dims,
+                    periods, 0, &grid);
+
+    int coords[2];
+    MPI_Cart_coords(grid, rank, 2, coords);
+
+    int remain_row[2] = {0, 1};
+    int remain_col[2] = {1, 0};
+
+    MPI_Cart_sub(grid, remain_row, &row_comm);
+    MPI_Cart_sub(grid, remain_col, &col_comm);
+
+    float *A = NULL, *B = NULL;
+    float *packedA = NULL, *packedB = NULL;
+    float *gatherC = NULL;
+
+    if (rank == 0) {
+
+        A = calloc(matrix_size, sizeof(float));
+        B = calloc(matrix_size, sizeof(float));
+
+        packedA = malloc((size_t)size * block_size * sizeof(float));
+        packedB = malloc((size_t)size * block_size * sizeof(float));
+        gatherC = malloc((size_t)size * block_size * sizeof(float));
+
+        if (!A || !B || !packedA || !packedB || !gatherC) {
+            printf("Root allocation failed\n");
+            MPI_Abort(grid, 1);
+        }
+
+        srand(42);
+
+        // Generate same random values as serial/1D GEMM
+        for (int i = 0; i < n * n; i++) {
+            int r = i / n;
+            int c = i % n;
+
+            A[(size_t)r * N + c] =
+                (float)rand() / RAND_MAX;
+
+            B[(size_t)r * N + c] =
+                (float)rand() / RAND_MAX;
+        }
+
+        // Pack matrix blocks for each process
+        for (int r = 0; r < q; r++) {
+            for (int c = 0; c < q; c++) {
+
+                int dest = r * q + c;
+
+                for (int i = 0; i < b; i++) {
+
+                    memcpy(
+                        packedA + (size_t)dest * block_size + (size_t)i * b,
+                        A + (size_t)(r * b + i) * N + c * b,
+                        b * sizeof(float)
+                    );
+
+                    memcpy(
+                        packedB + (size_t)dest * block_size + (size_t)i * b,
+                        B + (size_t)(r * b + i) * N + c * b,
+                        b * sizeof(float)
+                    );
+                }
+            }
+        }
+    }
+
+    // Local matrix blocks
+    float *localA = malloc(block_size * sizeof(float));
+    float *localB = malloc(block_size * sizeof(float));
+    float *localC = calloc(block_size, sizeof(float));
+
+    float *panelA = malloc(block_size * sizeof(float));
+    float *panelB = malloc(block_size * sizeof(float));
+
+    if (!localA || !localB || !localC || !panelA || !panelB) {
+        printf("Process %d: Local allocation failed\n", rank);
+        MPI_Abort(grid, 1);
+    }
+
+    MPI_Barrier(grid);
+
+    double total_start = MPI_Wtime();
+    double comm_time = 0.0;
+    double comp_time = 0.0;
+
+    // Distribute A and B blocks
+    double t = MPI_Wtime();
+
+    MPI_Scatter(
+        packedA, (int)block_size, MPI_FLOAT,
+        localA, (int)block_size, MPI_FLOAT,
+        0, grid
+    );
+
+    MPI_Scatter(
+        packedB, (int)block_size, MPI_FLOAT,
+        localB, (int)block_size, MPI_FLOAT,
+        0, grid
+    );
+
+    comm_time += MPI_Wtime() - t;
+
+    // SUMMA iterations
+    for (int k = 0; k < q; k++) {
+
+        // Select local panels
+        if (coords[1] == k)
+            memcpy(panelA, localA, block_size * sizeof(float));
+
+        if (coords[0] == k)
+            memcpy(panelB, localB, block_size * sizeof(float));
+
+        // Broadcast A panel across process row
+        t = MPI_Wtime();
+
+        MPI_Bcast(
+            panelA, (int)block_size, MPI_FLOAT,
+            k, row_comm
+        );
+
+        // Broadcast B panel down process column
+        MPI_Bcast(
+            panelB, (int)block_size, MPI_FLOAT,
+            k, col_comm
+        );
+
+        comm_time += MPI_Wtime() - t;
+
+        // Multiply panels and accumulate local C
+        t = MPI_Wtime();
+
+        for (int i = 0; i < b; i++) {
+            for (int x = 0; x < b; x++) {
+
+                float a = panelA[i * b + x];
+
+                for (int j = 0; j < b; j++) {
+                    localC[i * b + j] +=
+                        a * panelB[x * b + j];
+                }
+            }
+        }
+
+        comp_time += MPI_Wtime() - t;
+
+        // Prepare next iteration's local blocks
+        // Each process already owns its blocks for every step.
+        // No additional shifting is required in SUMMA.
+    }
+
+    // Gather final C blocks
+    t = MPI_Wtime();
+
+    MPI_Gather(
+        localC, (int)block_size, MPI_FLOAT,
+        gatherC, (int)block_size, MPI_FLOAT,
+        0, grid
+    );
+
+    comm_time += MPI_Wtime() - t;
+
+    double total_time = MPI_Wtime() - total_start;
+
+    double max_total, max_comm, max_comp;
+
+    MPI_Reduce(&total_time, &max_total, 1,
+               MPI_DOUBLE, MPI_MAX, 0, grid);
+
+    MPI_Reduce(&comm_time, &max_comm, 1,
+               MPI_DOUBLE, MPI_MAX, 0, grid);
+
+    MPI_Reduce(&comp_time, &max_comp, 1,
+               MPI_DOUBLE, MPI_MAX, 0, grid);
+
+    if (rank == 0) {
+
+        // Extract C[0][0] from process P0's block
+        double c00 = gatherC[0];
+
+        double operations = 2.0 * n * n * n;
+        double gflops = operations / (max_total * 1e9);
+
+        printf("\n========== SUMMA GEMM ==========\n");
+        printf("Matrix size        : %d x %d\n", n, n);
+        printf("Padded size        : %d x %d\n", N, N);
+        printf("Process grid       : %d x %d\n", q, q);
+        printf("Number of processes: %d\n", size);
+
+        printf("Execution time     : %.6f seconds\n", max_total);
+        printf("Communication time : %.6f seconds\n", max_comm);
+        printf("Computation time   : %.6f seconds\n", max_comp);
+
+        printf("Performance        : %.4f GFLOP/s\n", gflops);
+        printf("C[0][0]            : %.6f\n", c00);
+
+        printf("================================\n");
+    }
+
+    free(localA);
+    free(localB);
+    free(localC);
+    free(panelA);
+    free(panelB);
+
+    if (rank == 0) {
+        free(A);
+        free(B);
+        free(packedA);
+        free(packedB);
+        free(gatherC);
+    }
+
+    MPI_Comm_free(&row_comm);
+    MPI_Comm_free(&col_comm);
+    MPI_Comm_free(&grid);
+
+    MPI_Finalize();
+
+    return 0;
+}
