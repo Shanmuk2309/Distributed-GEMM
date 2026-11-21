@@ -4,6 +4,7 @@
 #include <string.h>
 #include <math.h>
 #include <mpi.h>
+#include <cblas.h>
 
 int main(int argc, char *argv[]) {
 
@@ -56,6 +57,8 @@ int main(int argc, char *argv[]) {
     float *packedA = NULL, *packedB = NULL;
     float *gatherC = NULL;
 
+    float *A_ref = NULL, *B_ref = NULL, *C_ref = NULL;
+
     if (rank == 0) {
 
         A = calloc(ms, sizeof(float));
@@ -65,7 +68,12 @@ int main(int argc, char *argv[]) {
         packedB = malloc((size_t)size * bs * sizeof(float));
         gatherC = malloc((size_t)size * bs * sizeof(float));
 
-        if (!A || !B || !packedA || !packedB || !gatherC) {
+        A_ref = malloc((size_t)n * n * sizeof(float));
+        B_ref = malloc((size_t)n * n * sizeof(float));
+        C_ref = malloc((size_t)n * n * sizeof(float));
+
+        if (!A || !B || !packedA || !packedB || !gatherC ||
+            !A_ref || !B_ref || !C_ref) {
             printf("Root allocation failed\n");
             MPI_Abort(grid, 1);
         }
@@ -81,6 +89,12 @@ int main(int argc, char *argv[]) {
 
                 B[(size_t)i * N + j] =
                     (float)rand() / RAND_MAX;
+
+                A_ref[(size_t)i * n + j] =
+                    A[(size_t)i * N + j];
+
+                B_ref[(size_t)i * n + j] =
+                    B[(size_t)i * N + j];
             }
         }
 
@@ -241,6 +255,58 @@ int main(int argc, char *argv[]) {
         double operations = 2.0 * n * n * n;
         double gflops = operations / (max_total * 1e9);
 
+        // OpenBLAS reference multiplication
+        cblas_sgemm(
+            CblasRowMajor,
+            CblasNoTrans,
+            CblasNoTrans,
+            n, n, n,
+            1.0f,
+            A_ref, n,
+            B_ref, n,
+            0.0f,
+            C_ref, n
+        );
+
+        // Compare Cannon output with OpenBLAS
+        double max_abs_error = 0.0;
+        double max_rel_error = 0.0;
+
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < n; j++) {
+
+                int block_row = i / b;
+                int block_col = j / b;
+
+                int process_index = block_row * q + block_col;
+
+                int local_row = i % b;
+                int local_col = j % b;
+
+                size_t gather_index =
+                    (size_t)process_index * bs +
+                    (size_t)local_row * b +
+                    local_col;
+
+                float cannon_value = gatherC[gather_index];
+                float reference_value = C_ref[(size_t)i * n + j];
+
+                double abs_error =
+                    fabs((double)cannon_value - reference_value);
+
+                double denominator =
+                    fmax(fabs((double)reference_value), 1e-7);
+
+                double rel_error = abs_error / denominator;
+
+                if (abs_error > max_abs_error)
+                    max_abs_error = abs_error;
+
+                if (rel_error > max_rel_error)
+                    max_rel_error = rel_error;
+            }
+        }
+
         printf("\n========== CANNON GEMM ==========\n");
         printf("Matrix size        : %d x %d\n", n, n);
         printf("Padded size        : %d x %d\n", N, N);
@@ -254,7 +320,21 @@ int main(int argc, char *argv[]) {
         printf("Performance        : %.4f GFLOP/s\n", gflops);
         printf("C[0][0]            : %.6f\n", gatherC[0]);
 
+        printf("\n----- OpenBLAS Verification -----\n");
+        printf("Maximum absolute error : %.10e\n", max_abs_error);
+        printf("Maximum relative error : %.10e\n", max_rel_error);
+
+        if (max_rel_error < 1e-4) {
+            printf("Verification           : PASS\n");
+        } else {
+            printf("Verification           : FAIL\n");
+        }
+
         printf("=================================\n");
+
+        free(A_ref);
+        free(B_ref);
+        free(C_ref);
     }
 
     free(localA);

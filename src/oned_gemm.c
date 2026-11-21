@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <mpi.h>
+#include <cblas.h>
+#include <math.h>
 
 int main(int argc, char *argv[]) {
 
@@ -19,12 +21,16 @@ int main(int argc, char *argv[]) {
     if (n <= 0) {
         if (rank == 0)
             printf("Invalid matrix size\n");
+
         MPI_Finalize();
         return 1;
     }
 
+    size_t total_elements = (size_t)n * n;
+
     // Distribute rows as evenly as possible
     int local_rows = n / size;
+
     if (rank < n % size)
         local_rows++;
 
@@ -34,16 +40,22 @@ int main(int argc, char *argv[]) {
     float *A = NULL;
     float *B = NULL;
     float *C = NULL;
+    float *C_ref = NULL;
 
+    // Root process allocates complete matrices
     if (rank == 0) {
-        A = malloc((size_t)n * n * sizeof(float));
-        B = malloc((size_t)n * n * sizeof(float));
-        C = malloc((size_t)n * n * sizeof(float));
+
+        A = malloc(total_elements * sizeof(float));
+        B = malloc(total_elements * sizeof(float));
+        C = malloc(total_elements * sizeof(float));
+        C_ref = malloc(total_elements * sizeof(float));
 
         sendcounts = malloc(size * sizeof(int));
         displs = malloc(size * sizeof(int));
 
-        if (!A || !B || !C || !sendcounts || !displs) {
+        if (!A || !B || !C || !C_ref ||
+            !sendcounts || !displs) {
+
             printf("Root memory allocation failed\n");
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
@@ -51,7 +63,7 @@ int main(int argc, char *argv[]) {
         // Fixed random seed
         srand(42);
 
-        for (int i = 0; i < n * n; i++) {
+        for (size_t i = 0; i < total_elements; i++) {
             A[i] = (float)rand() / RAND_MAX;
             B[i] = (float)rand() / RAND_MAX;
         }
@@ -60,6 +72,7 @@ int main(int argc, char *argv[]) {
         int offset = 0;
 
         for (int i = 0; i < size; i++) {
+
             int rows = n / size + (i < n % size);
 
             sendcounts[i] = rows * n;
@@ -81,8 +94,10 @@ int main(int argc, char *argv[]) {
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
+    // Non-root processes allocate B
     if (rank != 0) {
-        B = malloc((size_t)n * n * sizeof(float));
+
+        B = malloc(total_elements * sizeof(float));
 
         if (!B) {
             printf("Process %d: B allocation failed\n", rank);
@@ -93,6 +108,7 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
 
     double total_start = MPI_Wtime();
+
     double comm_time = 0.0;
     double comp_time = 0.0;
 
@@ -107,24 +123,26 @@ int main(int argc, char *argv[]) {
 
     // 2. Broadcast complete matrix B
     MPI_Bcast(
-        B, n * n, MPI_FLOAT,
+        B, (int)total_elements, MPI_FLOAT,
         0, MPI_COMM_WORLD
     );
 
     comm_time += MPI_Wtime() - t;
 
-    // 3. Local matrix multiplication
+    // 3. Local matrix multiplication (i-k-j)
     t = MPI_Wtime();
 
     for (int i = 0; i < local_rows; i++) {
-        for (int j = 0; j < n; j++) {
-            float sum = 0.0f;
 
-            for (int k = 0; k < n; k++) {
-                sum += local_A[i * n + k] * B[k * n + j];
+        for (int k = 0; k < n; k++) {
+
+            float a = local_A[i * n + k];
+
+            for (int j = 0; j < n; j++) {
+
+                local_C[i * n + j] +=
+                    a * B[k * n + j];
             }
-
-            local_C[i * n + j] = sum;
         }
     }
 
@@ -146,42 +164,101 @@ int main(int argc, char *argv[]) {
     // 5. Find maximum time across all processes
     double max_total, max_comm, max_comp;
 
-    MPI_Reduce(&total_time, &max_total, 1,
-               MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(
+        &total_time, &max_total, 1,
+        MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD
+    );
 
-    MPI_Reduce(&comm_time, &max_comm, 1,
-               MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(
+        &comm_time, &max_comm, 1,
+        MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD
+    );
 
-    MPI_Reduce(&comp_time, &max_comp, 1,
-               MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(
+        &comp_time, &max_comp, 1,
+        MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD
+    );
 
-    // 6. Display results
+    // 6. OpenBLAS reference calculation and verification
     if (rank == 0) {
 
         double operations = 2.0 * n * n * n;
         double gflops = operations / (max_total * 1e9);
 
+        // Calculate reference matrix using OpenBLAS
+        cblas_sgemm(
+            CblasRowMajor,
+            CblasNoTrans,
+            CblasNoTrans,
+            n, n, n,
+            1.0f,
+            A, n,
+            B, n,
+            0.0f,
+            C_ref, n
+        );
+
+        // Compare complete matrices
+        float max_abs_error = 0.0f;
+        float max_rel_error = 0.0f;
+
+        for (size_t i = 0; i < total_elements; i++) {
+
+            float abs_error = fabsf(C[i] - C_ref[i]);
+
+            float denominator =
+                fmaxf(fabsf(C_ref[i]), 1e-7f);
+
+            float rel_error = abs_error / denominator;
+
+            if (abs_error > max_abs_error)
+                max_abs_error = abs_error;
+
+            if (rel_error > max_rel_error)
+                max_rel_error = rel_error;
+        }
+
+        // Display benchmark results
         printf("\n===== 1D DISTRIBUTED GEMM =====\n");
-        printf("Matrix size       : %d x %d\n", n, n);
+
+        printf("Matrix size        : %d x %d\n", n, n);
         printf("Number of processes: %d\n", size);
 
-        printf("Execution time    : %.6f seconds\n", max_total);
-        printf("Communication time: %.6f seconds\n", max_comm);
-        printf("Computation time  : %.6f seconds\n", max_comp);
+        printf("Execution time     : %.6f seconds\n", max_total);
+        printf("Communication time : %.6f seconds\n", max_comm);
+        printf("Computation time   : %.6f seconds\n", max_comp);
 
-        printf("Performance       : %.4f GFLOP/s\n", gflops);
-        printf("C[0][0]           : %.6f\n", C[0]);
+        printf("Performance        : %.4f GFLOP/s\n", gflops);
 
-        printf("===============================\n");
+        printf("C[0][0]            : %.6f\n", C[0]);
+
+        printf("\n----- OpenBLAS Verification -----\n");
+
+        printf("Maximum absolute error : %.10e\n",
+               max_abs_error);
+
+        printf("Maximum relative error : %.10e\n",
+               max_rel_error);
+
+        if (max_rel_error < 1e-4f)
+            printf("Verification           : PASSED\n");
+        else
+            printf("Verification           : FAILED\n");
+
+        printf("=================================\n");
     }
 
+    // 7. Free memory
     free(local_A);
     free(local_C);
     free(B);
 
     if (rank == 0) {
+
         free(A);
         free(C);
+        free(C_ref);
+
         free(sendcounts);
         free(displs);
     }
