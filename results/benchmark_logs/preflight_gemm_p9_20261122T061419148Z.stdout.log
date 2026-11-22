@@ -1,0 +1,15 @@
+
+===== 1D DISTRIBUTED GEMM =====
+Matrix size        : 512 x 512
+Number of processes: 9
+Execution time     : 0.023267 seconds
+Communication time : 0.016410 seconds
+Computation time   : 0.011419 seconds
+Performance        : 11.5371 GFLOP/s
+C[0][0]            : 124.346916
+
+----- OpenBLAS Verification -----
+Maximum absolute error : 1.9836425781e-04
+Maximum relative error : 1.4923892877e-06
+Verification           : PASSED
+=================================

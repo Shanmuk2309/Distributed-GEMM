@@ -1,0 +1,24 @@
+# Compiled MPI/OpenBLAS executables and object files
+*.exe
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.pdb
+
+# Python-generated cache and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Temporary/editor and crash-dump files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.dmp
+
+# Keep benchmark CSVs, run logs, experiment records, and generated graphs
+# versionable; these are project results rather than disposable build output.

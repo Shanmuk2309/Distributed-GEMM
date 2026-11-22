@@ -1,0 +1,17 @@
+
+========== SUMMA GEMM ==========
+Matrix size        : 512 x 512
+Padded size        : 512 x 512
+Process grid       : 4 x 4
+Number of processes: 16
+Execution time     : 0.066592 seconds
+Communication time : 0.062922 seconds
+Computation time   : 0.007314 seconds
+Performance        : 4.0311 GFLOP/s
+C[0][0]            : 124.346916
+
+----- OpenBLAS Verification -----
+Maximum absolute error : 1.9836425781e-04
+Maximum relative error : 1.4923892739e-06
+Verification           : PASSED
+================================

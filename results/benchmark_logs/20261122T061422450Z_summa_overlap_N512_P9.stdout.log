@@ -1,0 +1,17 @@
+
+======= SUMMA WITH OVERLAP =======
+Matrix size        : 512 x 512
+Padded size        : 513 x 513
+Process grid       : 3 x 3
+Processes          : 9
+Execution time     : 0.015356 seconds
+Communication time : 0.007290 seconds
+Computation time   : 0.009303 seconds
+Performance        : 17.4813 GFLOP/s
+C[0][0]            : 124.346916
+
+----- OpenBLAS Verification -----
+Maximum absolute error : 1.9836425781e-04
+Maximum relative error : 1.4923892739e-06
+Verification           : PASS
+==================================
