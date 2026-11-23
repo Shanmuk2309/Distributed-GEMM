@@ -1,0 +1,17 @@
+
+========== CANNON GEMM ==========
+Matrix size        : 8192 x 8192
+Padded size        : 8192 x 8192
+Process grid       : 1 x 1
+Number of processes: 1
+Execution time     : 93.490813 seconds
+Communication time : 0.244614 seconds
+Computation time   : 93.246190 seconds
+Performance        : 11.7606 GFLOP/s
+C[0][0]            : 2064.576729
+
+----- OpenBLAS Verification -----
+Maximum absolute error : 2.5920599001e-11
+Maximum relative error : 1.2448239160e-14
+Verification           : PASS
+=================================

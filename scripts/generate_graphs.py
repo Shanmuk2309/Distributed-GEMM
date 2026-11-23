@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RESULTS = ROOT / "results"
 GRAPH_DIR = RESULTS / "graphs"
 SIZES = [512, 1024, 2048, 4096]
+ALL_SIZES = SIZES + [8192]
 PROCESSES = [1, 4, 9, 16]
 ALGORITHMS = [
     ("oned_gemm", "1D GEMM", "oned_gemm_float.csv", "oned_gemm_double.csv"),
@@ -34,7 +35,7 @@ MARKERS = {"1D GEMM": "o", "SUMMA": "s", "Cannon": "^", "SUMMA overlap": "D", "C
 
 def validate_and_load() -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
     raw: dict[str, pd.DataFrame] = {}
-    expected = {(n, p) for n in SIZES for p in PROCESSES}
+    expected = {(n, p) for n in ALL_SIZES for p in PROCESSES}
     for key, _, single_file, double_file in ALGORITHMS:
         for precision, filename in (("Single", single_file), ("Double", double_file)):
             path = RESULTS / filename
@@ -50,8 +51,8 @@ def validate_and_load() -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
             df["Matrix_Size"] = pd.to_numeric(df["Matrix_Size"], errors="raise").astype(int)
             df["Processes"] = pd.to_numeric(df["Processes"], errors="raise").astype(int)
             df["Max_Relative_Error"] = pd.to_numeric(df["Max_Relative_Error"], errors="raise")
-            if len(df) != 16 or set(zip(df.Matrix_Size, df.Processes)) != expected:
-                raise ValueError(f"{filename} does not contain exactly the expected 16 configurations")
+            if len(df) != len(expected) or set(zip(df.Matrix_Size, df.Processes)) != expected:
+                raise ValueError(f"{filename} does not contain exactly the expected 20 configurations")
             if not df.Precision.eq(precision).all():
                 raise ValueError(f"{filename} contains a precision label inconsistent with its filename")
             if df.duplicated(["Matrix_Size", "Processes", "Precision"]).any():
@@ -77,11 +78,11 @@ def validate_and_load() -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
     summary["Successful_Runs"] = pd.to_numeric(summary.Successful_Runs, errors="raise").astype(int)
     for col in ["Median_Execution_Time", "Median_Communication_Time", "Median_Computation_Time", "Median_GFLOPS"]:
         summary[col] = pd.to_numeric(summary[col], errors="raise")
-    if len(summary) != 160 or summary.duplicated(["Program", "Matrix_Size", "Processes", "Precision"]).any():
-        raise ValueError("benchmark_summary.csv must have 160 unique configuration rows")
+    if len(summary) != 200 or summary.duplicated(["Program", "Matrix_Size", "Processes", "Precision"]).any():
+        raise ValueError("benchmark_summary.csv must have 200 unique configuration rows")
     if not (summary.Successful_Runs.eq(1).all()):
         raise ValueError("Expected exactly one successful run per configuration")
-    if not (summary.Matrix_Size.isin(SIZES).all() and summary.Processes.isin(PROCESSES).all()):
+    if not (summary.Matrix_Size.isin(ALL_SIZES).all() and summary.Processes.isin(PROCESSES).all()):
         raise ValueError("Summary contains an unexpected size or process count")
 
     program_to_key = {}
@@ -97,14 +98,14 @@ def validate_and_load() -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
         (key if precision == "Single" else f"{key}_double", n, p, precision)
         for key, *_ in ALGORITHMS
         for precision in ["Single", "Double"]
-        for n in SIZES
+        for n in ALL_SIZES
         for p in PROCESSES
     }
     actual_summary = set(zip(summary.Program, summary.Matrix_Size, summary.Processes, summary.Precision))
     if actual_summary != expected_summary:
         raise ValueError("Summary does not cover all algorithm/precision/size/process combinations")
-    # These are medians from benchmark_summary.csv; single successful runs mean
-    # each median is the one recorded measurement, not a repeated-run average.
+    # All sizes are plotted. 8192 came from a Mac, while 512–4096 came from
+    # Windows; charts explicitly mark this platform boundary.
     return summary, raw
 
 
@@ -150,24 +151,27 @@ def plot_execution_time(df: pd.DataFrame) -> None:
             panel = df[(df.Precision == precision) & (df.Processes == p)]
             for _, label, *_ in ALGORITHMS:
                 series = panel[panel.Algorithm_Label == label].sort_values("Matrix_Size")
-                ax.plot(series.Matrix_Size, series.Execution_Time, color=COLORS[label], marker=MARKERS[label], linewidth=1.8, markersize=5, label=label)
+                windows = series[series.Matrix_Size.isin(SIZES)]
+                mac = series[series.Matrix_Size == 8192]
+                ax.plot(windows.Matrix_Size, windows.Execution_Time, color=COLORS[label], marker=MARKERS[label], linewidth=1.8, markersize=5, label=label)
+                ax.scatter(mac.Matrix_Size, mac.Execution_Time, color=COLORS[label], marker="X", s=55, zorder=4, label="8192, Mac" if label == "1D GEMM" else None)
             ax.set_title(f"{p} process{'es' if p != 1 else ''}")
             ax.set_xlabel("Matrix size, n")
             ax.set_ylabel("Execution time (s)")
-            ax.set_xticks(SIZES, [f"{n:,}" for n in SIZES])
+            ax.set_xticks(ALL_SIZES, [f"{n:,}" for n in ALL_SIZES])
             ax.set_yscale("log")
             style_axes(ax)
         handles, labels = axes.flat[0].get_legend_handles_labels()
         fig.legend(handles, labels, loc="upper center", ncol=5, frameon=False, bbox_to_anchor=(0.5, 0.955))
-        fig.suptitle(f"Execution time vs matrix size — {precision} precision\nSingle-run measurements; log time axis", y=1.04, fontsize=14, fontweight="semibold")
+        fig.suptitle(f"Execution time vs matrix size — {precision} precision\nSingle runs; 8192 points are Mac, smaller sizes are Windows (log time axis)", y=1.04, fontsize=14, fontweight="semibold")
         fig.tight_layout(rect=(0, 0, 1, 0.90))
         save_figure(fig, f"execution_time_{precision.lower()}")
 
 
 def plot_scaling(df: pd.DataFrame, metric: str, ylabel: str, stem: str, title: str, efficiency: bool = False) -> None:
     for precision in ["Single", "Double"]:
-        fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.3), sharex=True)
-        for ax, n in zip(axes.flat, SIZES):
+        fig, axes = plt.subplots(3, 2, figsize=(12.5, 11), sharex=True)
+        for ax, n in zip(axes.flat, ALL_SIZES):
             panel = df[(df.Precision == precision) & (df.Matrix_Size == n)]
             for _, label, *_ in ALGORITHMS:
                 series = panel[panel.Algorithm_Label == label].sort_values("Processes")
@@ -179,6 +183,7 @@ def plot_scaling(df: pd.DataFrame, metric: str, ylabel: str, stem: str, title: s
             if efficiency:
                 ax.axhline(100, color="#626a73", linestyle="--", linewidth=1, label="100% efficiency")
             style_axes(ax)
+        axes.flat[-1].axis("off")
         handles, labels = axes.flat[0].get_legend_handles_labels()
         fig.legend(handles, labels, loc="upper center", ncol=5 if not efficiency else 6, frameon=False, bbox_to_anchor=(0.5, 0.955))
         fig.suptitle(f"{title} — {precision} precision\nDerived from single-run measurements", y=1.04, fontsize=14, fontweight="semibold")
@@ -193,15 +198,18 @@ def plot_gflops(df: pd.DataFrame) -> None:
             panel = df[(df.Precision == precision) & (df.Processes == p)]
             for _, label, *_ in ALGORITHMS:
                 series = panel[panel.Algorithm_Label == label].sort_values("Matrix_Size")
-                ax.plot(series.Matrix_Size, series.GFLOPS, color=COLORS[label], marker=MARKERS[label], linewidth=1.8, markersize=5, label=label)
+                windows = series[series.Matrix_Size.isin(SIZES)]
+                mac = series[series.Matrix_Size == 8192]
+                ax.plot(windows.Matrix_Size, windows.GFLOPS, color=COLORS[label], marker=MARKERS[label], linewidth=1.8, markersize=5, label=label)
+                ax.scatter(mac.Matrix_Size, mac.GFLOPS, color=COLORS[label], marker="X", s=55, zorder=4, label="8192, Mac" if label == "1D GEMM" else None)
             ax.set_title(f"{p} process{'es' if p != 1 else ''}")
             ax.set_xlabel("Matrix size, n")
             ax.set_ylabel("Performance (GFLOP/s)")
-            ax.set_xticks(SIZES, [f"{n:,}" for n in SIZES])
+            ax.set_xticks(ALL_SIZES, [f"{n:,}" for n in ALL_SIZES])
             style_axes(ax)
         handles, labels = axes.flat[0].get_legend_handles_labels()
         fig.legend(handles, labels, loc="upper center", ncol=5, frameon=False, bbox_to_anchor=(0.5, 0.955))
-        fig.suptitle(f"GFLOP/s vs matrix size — {precision} precision\nSingle-run measurements", y=1.04, fontsize=14, fontweight="semibold")
+        fig.suptitle(f"GFLOP/s vs matrix size — {precision} precision\nSingle runs; 8192 points are Mac, smaller sizes are Windows", y=1.04, fontsize=14, fontweight="semibold")
         fig.tight_layout(rect=(0, 0, 1, 0.90))
         save_figure(fig, f"gflops_{precision.lower()}")
 
@@ -209,8 +217,8 @@ def plot_gflops(df: pd.DataFrame) -> None:
 def plot_compute_comm(df: pd.DataFrame) -> None:
     for precision in ["Single", "Double"]:
         for p in PROCESSES:
-            fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.3), sharey=False)
-            for ax, n in zip(axes.flat, SIZES):
+            fig, axes = plt.subplots(3, 2, figsize=(12.5, 11), sharey=False)
+            for ax, n in zip(axes.flat, ALL_SIZES):
                 panel = df[(df.Precision == precision) & (df.Matrix_Size == n) & (df.Processes == p)].copy()
                 panel["Algorithm_Order"] = panel.Algorithm_Label.map({label: i for i, (_, label, *_) in enumerate(ALGORITHMS)})
                 panel = panel.sort_values("Algorithm_Order")
@@ -222,17 +230,18 @@ def plot_compute_comm(df: pd.DataFrame) -> None:
                 ax.set_title(f"n = {n:,}")
                 ax.set_ylabel("Time component (s)")
                 style_axes(ax, "y")
+            axes.flat[-1].axis("off")
             from matplotlib.patches import Patch
             legend = [Patch(facecolor="#777777", label="Computation"), Patch(facecolor="#b9c1cb", hatch="///", label="Communication")]
             fig.legend(handles=legend, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 0.955))
-            fig.suptitle(f"Computation and communication time — {precision} precision, P={p}\nStacked components; single-run measurements", y=1.04, fontsize=14, fontweight="semibold")
+            fig.suptitle(f"Computation and communication — {precision} precision, P={p}\nSingle runs; 8192 is Mac, smaller sizes are Windows", y=1.04, fontsize=14, fontweight="semibold")
             fig.tight_layout(rect=(0, 0, 1, 0.90))
             save_figure(fig, f"computation_communication_{precision.lower()}_p{p}")
 
 
 def plot_overlap(df: pd.DataFrame, base: str, overlap: str, label: str, precision: str) -> None:
-    fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.3), sharex=True)
-    for ax, n in zip(axes.flat, SIZES):
+    fig, axes = plt.subplots(3, 2, figsize=(12.5, 11), sharex=True)
+    for ax, n in zip(axes.flat, ALL_SIZES):
         panel = df[(df.Precision == precision) & (df.Matrix_Size == n) & (df.Algorithm.isin([base, overlap]))]
         for program, name, color, marker, linestyle in [
             (base, f"{label}", "#3568a8", "o", "-"),
@@ -245,9 +254,10 @@ def plot_overlap(df: pd.DataFrame, base: str, overlap: str, label: str, precisio
         ax.set_ylabel("Execution time (s)")
         ax.set_xticks(PROCESSES)
         style_axes(ax)
+    axes.flat[-1].axis("off")
     handles, labels = axes.flat[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 0.955))
-    fig.suptitle(f"{label} overlap comparison — {precision} precision\nSingle-run measurements", y=1.04, fontsize=14, fontweight="semibold")
+    fig.suptitle(f"{label} overlap comparison — {precision} precision\nSingle runs; 8192 Mac results, smaller sizes Windows", y=1.04, fontsize=14, fontweight="semibold")
     fig.tight_layout(rect=(0, 0, 1, 0.90))
     save_figure(fig, f"{label.lower()}_overlap_comparison_{precision.lower()}")
 
@@ -256,7 +266,7 @@ def build_analysis(df: pd.DataFrame, raw: dict[str, pd.DataFrame]) -> str:
     lines = [
         "# Distributed GEMM performance analysis",
         "",
-        "All charts use the measurements in `benchmark_summary.csv`. That file reports one successful run per configuration, so its medians equal single-run measurements; none of the figures should be interpreted as repeated-run averages. The ten raw CSV files were checked: all 160 expected configurations are present, have PASS verification, and have maximum relative error below `1e-4`.",
+        "Charts include all 200 single-run measurements: 512–4096 were recorded on Windows and 8192 on a separate Mac. The 8192 measurements are visibly identified as Mac data; do not compare their absolute time or GFLOP/s directly with Windows points. Speedup and efficiency use each algorithm/precision/size's own P=1 result, so the 8192 scaling curves are within the Mac campaign. Each configuration ran once; summary medians are single measurements, not repeated-run averages. All raw CSV rows passed verification with maximum relative error below `1e-4`.",
         "",
         "## Best-performing implementation by size",
         "",
@@ -265,7 +275,7 @@ def build_analysis(df: pd.DataFrame, raw: dict[str, pd.DataFrame]) -> str:
         "| Matrix size | Precision | Processes | Fastest algorithm | Execution time (s) | GFLOP/s |",
         "|---:|---|---:|---|---:|---:|",
     ]
-    for n in SIZES:
+    for n in ALL_SIZES:
         for precision in ["Single", "Double"]:
             for p in PROCESSES:
                 group = df[(df.Matrix_Size == n) & (df.Precision == precision) & (df.Processes == p)]
@@ -278,14 +288,14 @@ def build_analysis(df: pd.DataFrame, raw: dict[str, pd.DataFrame]) -> str:
     lines.append("| Precision | Size | Algorithm | P4 speedup | P9 speedup | P16 speedup | P16 efficiency |")
     lines.append("|---|---:|---|---:|---:|---:|---:|")
     for precision in ["Single", "Double"]:
-        for n in SIZES:
+        for n in ALL_SIZES:
             for _, label, *_ in ALGORITHMS:
                 group = df[(df.Precision == precision) & (df.Matrix_Size == n) & (df.Algorithm_Label == label)].set_index("Processes")
                 lines.append(f"| {precision} | {n:,} | {label} | {group.loc[4, 'Speedup']:.3f}× | {group.loc[9, 'Speedup']:.3f}× | {group.loc[16, 'Speedup']:.3f}× | {group.loc[16, 'Efficiency_Percent']:.1f}% |")
 
     lines += ["", "## Communication overhead", ""]
     comm_share = df["Communication_Time"] / (df["Communication_Time"] + df["Computation_Time"])
-    lines.append(f"Across the 160 configurations, communication time is greater than computation time in {int((df.Communication_Time > df.Computation_Time).sum())} cases. The median communication share of the measured communication-plus-computation components is {comm_share.median() * 100:.1f}% (range {comm_share.min() * 100:.1f}%–{comm_share.max() * 100:.1f}%). This component share is descriptive; for overlap implementations communication and computation may occur concurrently, so their sum is not necessarily execution time.")
+    lines.append(f"Across the 200 configurations from two machines, communication time is greater than computation time in {int((df.Communication_Time > df.Computation_Time).sum())} cases. The median communication share of the measured communication-plus-computation components is {comm_share.median() * 100:.1f}% (range {comm_share.min() * 100:.1f}%–{comm_share.max() * 100:.1f}%). This component share is descriptive; for overlap implementations communication and computation may occur concurrently, so their sum is not necessarily execution time.")
     lines.append("")
     for precision in ["Single", "Double"]:
         p16 = df[(df.Precision == precision) & (df.Processes == 16)]
@@ -299,7 +309,7 @@ def build_analysis(df: pd.DataFrame, raw: dict[str, pd.DataFrame]) -> str:
             b = df[(df.Algorithm == overlap) & (df.Precision == precision)].set_index(["Matrix_Size", "Processes"])
             pct = (a.Execution_Time - b.Execution_Time) / a.Execution_Time * 100
             wins = int((pct > 0).sum())
-            lines.append(f"- {label} ({precision.lower()}): overlap was faster in {wins}/16 matched size/process comparisons; median execution-time change was {pct.median():+.2f}% (positive means faster with overlap).")
+            lines.append(f"- {label} ({precision.lower()}): overlap was faster in {wins}/20 matched size/process comparisons; median execution-time change was {pct.median():+.2f}% (positive means faster with overlap).")
     lines.append("These are comparisons of measured wall times only. Single-run results do not establish that observed differences are repeatable or statistically significant.")
 
     lines += ["", "## SUMMA versus Cannon", ""]
@@ -309,7 +319,7 @@ def build_analysis(df: pd.DataFrame, raw: dict[str, pd.DataFrame]) -> str:
         comparisons = pd.DataFrame({"summa": summa.Execution_Time, "cannon": cannon.Execution_Time}).loc[precision]
         summa_wins = int((comparisons.summa < comparisons.cannon).sum())
         cannon_wins = int((comparisons.cannon < comparisons.summa).sum())
-        lines.append(f"- Plain SUMMA was faster in {summa_wins}/16 matched cases and Cannon in {cannon_wins}/16 ({precision.lower()}). No single algorithm dominated every tested size/process combination.")
+        lines.append(f"- Plain SUMMA was faster in {summa_wins}/20 matched cases and Cannon in {cannon_wins}/20 ({precision.lower()}). No single algorithm dominated every tested size/process combination.")
     lines.append("Use the winner table above to see the specific size and process-count conditions; rankings are workload- and precision-dependent.")
 
     lines += ["", "## Single versus double precision", ""]
@@ -323,13 +333,13 @@ def build_analysis(df: pd.DataFrame, raw: dict[str, pd.DataFrame]) -> str:
         "## Measurement limitations",
         "",
         "- Every configuration has one measurement. The summary median therefore has no repeated samples behind it; system load, process placement, and timing noise can affect individual points.",
-        "- Results come from one machine and one MPI implementation/runtime environment. Scaling and communication behavior may differ on other hardware, interconnects, and MPI configurations.",
+        "- The 512–4096 campaign used one Windows machine/runtime; the 8192 campaign used a separate Mac and Open MPI. Their performance values are kept separate. Neither is a multi-node study.",
         "- GFLOP/s uses each recorded execution time and the same `2n³` operation count. It is useful for within-campaign comparisons, but it does not separate the benchmark from system-level effects.",
         "- The stacked communication/computation figures show the reported timing components. In overlap variants, these components can overlap, so they should not be interpreted as additive portions of total execution time.",
         "",
         "## Inputs and generated figures",
         "",
-        "The ten `results/*_float.csv` and `results/*_double.csv` benchmark files were read without modification. Graph series and computed speedups use `benchmark_summary.csv`; raw CSVs were used to validate success and verification coverage.",
+        "The ten `results/*_float.csv` and `results/*_double.csv` files were read without modification and validated for all 200 rows. Every graph includes the 8192 observations. Absolute performance graphs identify the machine boundary; speedups use matched P=1 baselines from each size's own campaign.",
         "",
     ]
     return "\n".join(lines)
@@ -360,10 +370,13 @@ def main() -> None:
         plot_overlap(df, "cannon", "cannon_overlap", "Cannon", precision)
 
     analysis = build_analysis(df, raw)
-    (RESULTS / "graph_analysis.md").write_text(analysis, encoding="utf-8")
-    print(f"Validated {sum(len(frame) for frame in raw.values())} raw benchmark rows and {len(summary)} summary rows.")
+    documentation_dir = RESULTS / "documentation"
+    documentation_dir.mkdir(parents=True, exist_ok=True)
+    analysis_path = documentation_dir / "graph_analysis.md"
+    analysis_path.write_text(analysis, encoding="utf-8")
+    print(f"Validated {sum(len(frame) for frame in raw.values())} raw benchmark rows; plotted {len(summary)} summary rows across both campaigns.")
     print(f"Generated {len(list(GRAPH_DIR.glob('*.png')))} PNG graphs at 300 DPI in {GRAPH_DIR}")
-    print(f"Analysis written to {RESULTS / 'graph_analysis.md'}")
+    print(f"Analysis written to {analysis_path}")
 
 
 if __name__ == "__main__":

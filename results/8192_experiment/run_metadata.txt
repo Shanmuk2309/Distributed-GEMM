@@ -1,0 +1,10 @@
+Run timestamp UTC: 20261122T165429Z
+Host: macOS-27.0.1-arm64-arm-64bit
+Machine: arm64
+Python: 3.9.6
+MPI compiler: mpicc: Open MPI 5.0.11 (Language: C)
+Configurations attempted: 40
+Successful: 40
+Failed: 0
+Skipped: 0
+MPI configurations ran sequentially with OpenBLAS/OMP threads set to 1.

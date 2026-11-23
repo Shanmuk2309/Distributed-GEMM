@@ -7,6 +7,7 @@ $Invariant = [System.Globalization.CultureInfo]::InvariantCulture
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $ResultsDir = Join-Path $ProjectRoot 'results'
 $LogDir = Join-Path $ResultsDir 'benchmark_logs'
+$DocumentationDir = Join-Path $ResultsDir 'documentation'
 $Compiler = 'mpicc'
 $Mpiexec = 'mpiexec'
 $IncludePath = 'C:/msys64/ucrt64/include/openblas'
@@ -150,7 +151,7 @@ function Write-SummaryFiles {
     $lines.Add("- Skipped configurations with an existing successful row: $Skipped")
     $lines.Add("- Measurements: one run per configuration; summary medians therefore equal each configuration's single successful measurement unless pre-existing successful records are present.")
     $lines.Add('- Algorithms and precision variants: 1D GEMM, SUMMA, Cannon, SUMMA overlap, Cannon overlap; single and double precision.')
-    $lines.Add('- Matrix sizes: 512, 1024, 2048, 4096. Matrix size 8192 was not run.')
+    $lines.Add('- This Windows runner covers matrix sizes 512, 1024, 2048, 4096. Separate Mac 8192 measurements are retained in the per-program CSVs and are not run by this script.')
     $lines.Add('- Process counts: 1, 4, 9, 16.')
     $lines.Add('- MPI startup preflight: 9 and 16 processes passed with hello_mpi.exe; OpenBLAS-linked 512 GEMM passed at 9 and 16 processes.')
     $lines.Add('- CSV files updated: successful rows appended to the mapped algorithm/precision CSVs; failures appended to benchmark_failures.csv when present.')
@@ -186,7 +187,7 @@ function Write-SummaryFiles {
     $lines.Add('- 9-process execution worked in preflight: yes.')
     $lines.Add('- 16-process execution worked in preflight: yes.')
     $lines.Add('- Incomplete configurations: see failed and skipped counts above; configurations not attempted due to an early preflight/compiler stop are not included.')
-    $lines | Set-Content -LiteralPath (Join-Path $ResultsDir 'benchmark_summary.md') -Encoding utf8
+    $lines | Set-Content -LiteralPath (Join-Path $DocumentationDir 'benchmark_summary.md') -Encoding utf8
 }
 
 # Configure the required runtime before compiling, preflight, or launching MPI.
@@ -198,6 +199,7 @@ $env:OMP_DYNAMIC = 'FALSE'
 
 New-Item -ItemType Directory -Path $ResultsDir -Force | Out-Null
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+New-Item -ItemType Directory -Path $DocumentationDir -Force | Out-Null
 
 # Validate and preserve the exact existing per-program CSV headers.
 foreach ($program in $Programs) {

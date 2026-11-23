@@ -213,6 +213,7 @@ int main(int argc, char *argv[]) {
             MPI_Isend(localA, (int)bs, MPI_DOUBLE, left, 2, grid, &requests[request_count++]);
             MPI_Irecv(nextB, (int)bs, MPI_DOUBLE, down, 3, grid, &requests[request_count++]);
             MPI_Isend(localB, (int)bs, MPI_DOUBLE, up, 3, grid, &requests[request_count++]);
+            shift_start = MPI_Wtime() - post_start;
         }
 
         t = MPI_Wtime();
